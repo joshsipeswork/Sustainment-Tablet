@@ -1,0 +1,3 @@
+<resources>
+    <style name="Theme.SustainmentLauncher" parent="Theme.AppCompat.DayNight.NoActionBar" />
+</resources>
