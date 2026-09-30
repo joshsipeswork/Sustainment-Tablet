@@ -25,6 +25,7 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import android.view.View
+import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.security.crypto.EncryptedSharedPreferences
@@ -44,6 +45,12 @@ class MainActivity : AppCompatActivity() {
 
     // Newline built from a char code so no backslash escape exists in source.
     private val nl = Char(10).toString()
+
+    // Key for remembering the last-used plant across app restarts.
+    private val lastPlantKey = "last_plant"
+
+    // Set true if encrypted storage could not initialize and we fell back to plaintext.
+    private var secureStorageInsecure = false
 
     // Plants: code used for storage keys, plus a display name.
     private val plants = listOf(
@@ -85,6 +92,7 @@ class MainActivity : AppCompatActivity() {
 
         prefs = getSharedPreferences("tiles", MODE_PRIVATE)
         securePrefs = initSecurePrefs()
+        if (secureStorageInsecure) warnInsecureStorage()
 
         // Persist cookies across overlay open/close and app restarts.
         CookieManager.getInstance().setAcceptCookie(true)
@@ -96,13 +104,45 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.btnSwitchPlant).setOnClickListener { showPlantChooser() }
         startClock()
 
-        // Start on the plant chooser.
-        showPlantChooser()
+        // Modern replacement for the deprecated onBackPressed() override.
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                val web = currentWeb
+                if (webOverlay != null && web != null) {
+                    // Browsing a site: page back, then close the overlay.
+                    if (web.canGoBack()) web.goBack() else closeWebOverlay()
+                    return
+                }
+                if (plantOverlay != null) {
+                    // On the plant chooser.
+                    // ESCAPE HATCH: leave the launcher to the device's other HOME app.
+                    // Remove this line before production to keep operators contained.
+                    openStockLauncher()
+                    return
+                }
+                // On the tile grid: return to the plant chooser.
+                showPlantChooser()
+            }
+        })
+
+        // Last-plant memory: skip the chooser and reopen the last-used plant if known.
+        val remembered = lastPlant()
+        if (remembered != null) {
+            selectPlant(remembered)
+        } else {
+            showPlantChooser()
+        }
     }
 
     // ---------------- Storage key namespacing per plant ----------------
 
     private fun prefix(): String = (currentPlant?.code ?: "west") + "_"
+
+    // Returns the remembered plant, or null if none saved / not recognized.
+    private fun lastPlant(): Plant? {
+        val code = prefs.getString(lastPlantKey, null) ?: return null
+        return plants.firstOrNull { it.code == code }
+    }
 
     // ---------------- Encrypted storage for credentials ----------------
 
@@ -119,8 +159,28 @@ class MainActivity : AppCompatActivity() {
                 EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
             )
         } catch (e: Exception) {
+            // Option C: keep working via plaintext fallback, but flag it loudly.
+            secureStorageInsecure = true
             getSharedPreferences("tiles_secure_fallback", MODE_PRIVATE)
         }
+    }
+
+    private fun warnInsecureStorage() {
+        Toast.makeText(
+            this,
+            "WARNING: secure storage unavailable - credentials stored UNENCRYPTED",
+            Toast.LENGTH_LONG
+        ).show()
+        AlertDialog.Builder(this)
+            .setTitle("Insecure credential storage")
+            .setMessage(
+                "Encrypted storage could not be initialized on this tablet." + nl + nl +
+                    "Any saved login usernames and passwords will be stored UNENCRYPTED " +
+                    "until this is resolved. Do not use production credentials on this device."
+            )
+            .setPositiveButton("Understood", null)
+            .setCancelable(false)
+            .show()
     }
 
     // ---------------- Dimension helpers ----------------
@@ -222,8 +282,11 @@ class MainActivity : AppCompatActivity() {
 
     private fun selectPlant(plant: Plant) {
         currentPlant = plant
+        // Remember this choice so the next launch can skip the chooser.
+        prefs.edit().putString(lastPlantKey, plant.code).apply()
+        val warn = if (secureStorageInsecure) "  ·  ⚠ INSECURE STORAGE" else ""
         findViewById<TextView>(R.id.plantLabel).text =
-            plant.name + "  ·  AMR / AGV Sustainment"
+            plant.name + "  ·  AMR / AGV Sustainment" + warn
         plantOverlay?.let { (it.parent as? ViewGroup)?.removeView(it) }
         plantOverlay = null
         renderTiles()
@@ -800,15 +863,6 @@ class MainActivity : AppCompatActivity() {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK
         }
         startActivity(Intent.createChooser(intent, "Open Home With…"))
-    }
-
-    override fun onBackPressed() {
-        val web = currentWeb
-        if (webOverlay != null && web != null) {
-            if (web.canGoBack()) web.goBack() else closeWebOverlay()
-            return
-        }
-        // On the plant chooser or home grid: intentionally do nothing.
     }
 
     data class Plant(val code: String, val name: String, val color: Int)

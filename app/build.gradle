@@ -3,6 +3,10 @@ plugins {
     id 'org.jetbrains.kotlin.android'
 }
 
+// CI passes -PappVersionCode / -PappVersionName. Local builds fall back to 1 / "1.0".
+def appVersionCode = (project.findProperty("appVersionCode") ?: "1").toString().toInteger()
+def appVersionName = (project.findProperty("appVersionName") ?: "1.0").toString()
+
 android {
     namespace 'com.sustainment.launcher'
     compileSdk 34
@@ -11,8 +15,8 @@ android {
         applicationId "com.sustainment.launcher"
         minSdk 24
         targetSdk 34
-        versionCode 1
-        versionName "1.0"
+        versionCode appVersionCode
+        versionName appVersionName
     }
 
     signingConfigs {
