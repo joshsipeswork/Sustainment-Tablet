@@ -2,7 +2,6 @@
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#0B1D2A"
     android:fillViewport="true"
     android:padding="16dp">
 
@@ -11,30 +10,71 @@
         android:layout_height="wrap_content"
         android:orientation="vertical">
 
-        <TextView
+        <!-- Top accent bar (Toyota red -> MiR cyan) -->
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="4dp"
+            android:layout_marginBottom="14dp"
+            android:background="@drawable/header_accent" />
+
+        <!-- Header row: title block + live clock -->
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Sustainment Launcher"
-            android:textColor="#FFFFFF"
-            android:textSize="26sp"
-            android:textStyle="bold"
-            android:gravity="center"
-            android:paddingBottom="12dp" />
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:paddingBottom="16dp">
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="SUSTAINMENT LAUNCHER"
+                    android:textColor="@color/text_primary"
+                    android:textSize="24sp"
+                    android:textStyle="bold"
+                    android:letterSpacing="0.06" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="AMR · AGV Fleet Sustainment"
+                    android:textColor="@color/mir_cyan"
+                    android:textSize="13sp"
+                    android:letterSpacing="0.04" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/clock"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:gravity="end"
+                android:textColor="@color/text_muted"
+                android:textSize="14sp" />
+        </LinearLayout>
 
         <GridLayout
             android:id="@+id/grid"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:useDefaultMargins="true" />
+            android:useDefaultMargins="false" />
 
         <Button
             android:id="@+id/btnStock"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="24dp"
-            android:text="Back to Stock Home"
+            android:background="@drawable/btn_secondary"
+            android:text="⌂  Device Home"
             android:textAllCaps="false"
-            android:textSize="18sp" />
+            android:textColor="@color/mir_cyan"
+            android:textSize="16sp"
+            android:stateListAnimator="@null" />
 
     </LinearLayout>
 </ScrollView>
