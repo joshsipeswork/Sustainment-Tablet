@@ -938,12 +938,66 @@ class MainActivity : AppCompatActivity() {
             settings.domStorageEnabled = true
             settings.useWideViewPort = true
             settings.loadWithOverviewMode = true
-            webChromeClient = WebChromeClient()
+            webChromeClient = object : WebChromeClient() {
+                // Surface JS console errors (SPA crashes often show up here).
+                override fun onConsoleMessage(
+                    cm: android.webkit.ConsoleMessage
+                ): Boolean {
+                    if (cm.messageLevel() == android.webkit.ConsoleMessage.MessageLevel.ERROR) {
+                        Toast.makeText(
+                            this@MainActivity,
+                            "JS ERROR: " + cm.message(),
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                    return true
+                }
+            }
             webViewClient = object : WebViewClient() {
                 override fun onPageFinished(view: WebView, url: String?) {
                     injectLogin(view, tile)
                     if (tile.keepAlive) injectKeepAlive(view)
                     webHandler.postDelayed({ injectLogin(view, tile) }, 1200L)
+                }
+
+                // Catches main-page load failures (cleartext block, DNS, connection refused).
+                override fun onReceivedError(
+                    view: WebView,
+                    request: android.webkit.WebResourceRequest,
+                    error: android.webkit.WebResourceError
+                ) {
+                    if (request.isForMainFrame) {
+                        val msg = "LOAD ERROR " + error.errorCode + ": " + error.description +
+                            nl + request.url.toString()
+                        Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show()
+                    }
+                }
+
+                // Catches server HTTP errors on the main page (404, 500, etc.)
+                override fun onReceivedHttpError(
+                    view: WebView,
+                    request: android.webkit.WebResourceRequest,
+                    errorResponse: android.webkit.WebResourceResponse
+                ) {
+                    if (request.isForMainFrame) {
+                        val msg = "HTTP " + errorResponse.statusCode + " on " +
+                            request.url.toString()
+                        Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show()
+                    }
+                }
+
+                // Catches SSL cert problems. REPORTS ONLY - does NOT bypass.
+                override fun onReceivedSslError(
+                    view: WebView,
+                    handler: android.webkit.SslErrorHandler,
+                    error: android.net.http.SslError
+                ) {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "SSL ERROR: " + error.primaryError + nl + error.url,
+                        Toast.LENGTH_LONG
+                    ).show()
+                    handler.cancel() // stay secure - do NOT proceed past a bad cert
                 }
             }
         }
