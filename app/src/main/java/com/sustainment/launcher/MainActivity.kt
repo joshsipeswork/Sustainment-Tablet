@@ -2,8 +2,13 @@ package com.sustainment.launcher
 
 import android.content.Intent
 import android.content.SharedPreferences
+import android.graphics.drawable.Drawable
+import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.text.InputType
+import android.view.Gravity
 import android.view.ViewGroup
 import android.webkit.WebChromeClient
 import android.webkit.WebView
@@ -13,22 +18,44 @@ import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.GridLayout
 import android.widget.LinearLayout
+import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class MainActivity : AppCompatActivity() {
 
     // ================= LAYOUT SETTINGS =================
     private val slotCount = 8   // number of tiles on the grid
     private val columns = 2     // change to 3 for smaller tiles
+    private val defaultAccent = 0xFF23B5D3.toInt() // MiR cyan
     // ==================================================
+
+    // Color-code tiles by system (maintenance zone, CMMS, docs, safety, etc.)
+    private val accentPalette = listOf(
+        "Toyota Red" to 0xFFEB0A1E.toInt(),
+        "MiR Cyan" to 0xFF23B5D3.toInt(),
+        "Signal Green" to 0xFF27AE60.toInt(),
+        "Caution Amber" to 0xFFF5A623.toInt(),
+        "Fleet Violet" to 0xFF8E7CFF.toInt(),
+        "Steel Blue" to 0xFF5B7A99.toInt()
+    )
+
+    private val iconChoices = listOf(
+        "— none —", "🤖", "🚚", "🔧", "🛠️", "⚙️", "📊", "📈", "📋",
+        "🗺️", "🧭", "📡", "🏭", "📦", "🧰", "🚨", "🔋", "🌐", "🖥️", "📁"
+    )
 
     private lateinit var prefs: SharedPreferences
     private lateinit var grid: GridLayout
 
     private var webOverlay: ViewGroup? = null
     private var currentWeb: WebView? = null
+
+    private val clockHandler = Handler(Looper.getMainLooper())
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -41,6 +68,31 @@ class MainActivity : AppCompatActivity() {
         renderTiles()
 
         findViewById<Button>(R.id.btnStock).setOnClickListener { openStockLauncher() }
+        startClock()
+    }
+
+    // ---------------- Dimension helpers ----------------
+
+    private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+    private fun dpf(v: Float) = v * resources.displayMetrics.density
+
+    // ---------------- Live clock ----------------
+
+    private fun startClock() {
+        val tv = findViewById<TextView>(R.id.clock)
+        val fmt = SimpleDateFormat("EEE  MMM d   h:mm a", Locale.getDefault())
+        val runnable = object : Runnable {
+            override fun run() {
+                tv.text = fmt.format(Date())
+                clockHandler.postDelayed(this, 1000)
+            }
+        }
+        clockHandler.post(runnable)
+    }
+
+    override fun onDestroy() {
+        clockHandler.removeCallbacksAndMessages(null)
+        super.onDestroy()
     }
 
     // ---------------- Grid rendering ----------------
@@ -55,11 +107,25 @@ class MainActivity : AppCompatActivity() {
     private fun makeButton(index: Int, tile: Tile): Button {
         val isEmpty = tile.type == TileType.EMPTY
         return Button(this).apply {
-            text = if (isEmpty) "➕ Tap to set up" else tile.label
-            textSize = if (isEmpty) 16f else 22f
+            text = if (isEmpty) {
+                "＋
+Tap to set up"
+            } else buildString {
+                if (tile.icon.isNotEmpty()) append(tile.icon).append("
+")
+                append(tile.label)
+            }
+            textSize = if (isEmpty) 15f else 18f
+            setTextColor(if (isEmpty) 0xFF9FB3C8.toInt() else 0xFFF5F7FA.toInt())
             isAllCaps = false
+            gravity = Gravity.CENTER
+            setLineSpacing(dpf(2f), 1f)
+            background = if (isEmpty) emptyTileBackground() else filledTileBackground(tile.color)
+            stateListAnimator = null
+            elevation = if (isEmpty) 0f else dpf(3f)
+
             setOnClickListener {
-                if (isEmpty) configureTile(index) else launch(tile)
+                if (isEmpty) configureTile(index, null) else launch(tile)
             }
             setOnLongClickListener {
                 showTileOptions(index, tile)
@@ -67,13 +133,29 @@ class MainActivity : AppCompatActivity() {
             }
             layoutParams = GridLayout.LayoutParams().apply {
                 width = 0
-                height = GridLayout.LayoutParams.WRAP_CONTENT
+                height = dp(140)
                 columnSpec = GridLayout.spec(GridLayout.UNDEFINED, 1f)
-                setMargins(24, 24, 24, 24)
+                setMargins(dp(10), dp(10), dp(10), dp(10))
             }
-            setPadding(24, 72, 24, 72)
+            setPadding(dp(12), dp(16), dp(12), dp(16))
         }
     }
+
+    private fun filledTileBackground(accent: Int): Drawable =
+        GradientDrawable(
+            GradientDrawable.Orientation.TL_BR,
+            intArrayOf(0xFF17334C.toInt(), 0xFF0E2131.toInt())
+        ).apply {
+            cornerRadius = dpf(20f)
+            setStroke(dp(2), accent)
+        }
+
+    private fun emptyTileBackground(): Drawable =
+        GradientDrawable().apply {
+            cornerRadius = dpf(20f)
+            setColor(0x0FFFFFFF)
+            setStroke(dp(2), 0xFF3A5670.toInt(), dpf(8f), dpf(6f))
+        }
 
     // ---------------- Persistence ----------------
 
@@ -81,16 +163,20 @@ class MainActivity : AppCompatActivity() {
         val type = prefs.getString("tile_${i}_type", TileType.EMPTY.name) ?: TileType.EMPTY.name
         val label = prefs.getString("tile_${i}_label", "") ?: ""
         val target = prefs.getString("tile_${i}_target", "") ?: ""
-        return Tile(label, TileType.valueOf(type), target)
+        val icon = prefs.getString("tile_${i}_icon", "") ?: ""
+        val color = prefs.getInt("tile_${i}_color", defaultAccent)
+        return Tile(label, TileType.valueOf(type), target, icon, color)
     }
 
-    private fun saveTile(i: Int, tile: Tile) {
+    private fun saveTile(i: Int, tile: Tile, render: Boolean = true) {
         prefs.edit()
             .putString("tile_${i}_type", tile.type.name)
             .putString("tile_${i}_label", tile.label)
             .putString("tile_${i}_target", tile.target)
+            .putString("tile_${i}_icon", tile.icon)
+            .putInt("tile_${i}_color", tile.color)
             .apply()
-        renderTiles()
+        if (render) renderTiles()
     }
 
     private fun clearTile(i: Int) {
@@ -98,17 +184,122 @@ class MainActivity : AppCompatActivity() {
             .remove("tile_${i}_type")
             .remove("tile_${i}_label")
             .remove("tile_${i}_target")
+            .remove("tile_${i}_icon")
+            .remove("tile_${i}_color")
             .apply()
         renderTiles()
     }
 
-    // ---------------- Setup wizard ----------------
+    private fun swap(a: Int, b: Int) {
+        val ta = loadTile(a)
+        val tb = loadTile(b)
+        saveTile(a, tb, render = false)
+        saveTile(b, ta, render = false)
+        renderTiles()
+    }
 
-    private fun configureTile(index: Int) {
+    // ---------------- Long-press options ----------------
+
+    private fun showTileOptions(index: Int, tile: Tile) {
+        if (tile.type == TileType.EMPTY) {
+            configureTile(index, null)
+            return
+        }
+        val options = arrayOf(
+            "✏️  Rename",
+            "🎯  Change target (app or web)",
+            "😀  Set icon",
+            "🎨  Accent color",
+            "↔️  Move / swap",
+            "⧉  Duplicate",
+            "🗑  Clear"
+        )
         AlertDialog.Builder(this)
-            .setTitle("Set up tile ${index + 1}")
-            .setItems(arrayOf("Website (URL)", "Installed app")) { _, which ->
-                if (which == 0) configureUrl(index, null) else configureApp(index)
+            .setTitle(tile.label.ifEmpty { "Tile ${index + 1}" })
+            .setItems(options) { _, which ->
+                when (which) {
+                    0 -> renameTile(index, tile)
+                    1 -> configureTile(index, tile)
+                    2 -> setIcon(index, tile)
+                    3 -> setAccent(index, tile)
+                    4 -> moveTile(index)
+                    5 -> duplicateTile(tile)
+                    6 -> clearTile(index)
+                }
+            }
+            .show()
+    }
+
+    private fun renameTile(index: Int, tile: Tile) {
+        val input = EditText(this).apply {
+            hint = "Tile name"
+            setText(tile.label)
+            setSelection(text.length)
+        }
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(24), dp(12), dp(24), 0)
+            addView(input)
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Rename tile")
+            .setView(box)
+            .setPositiveButton("Save") { _, _ ->
+                val name = input.text.toString().trim()
+                if (name.isNotEmpty()) saveTile(index, tile.copy(label = name))
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun setIcon(index: Int, tile: Tile) {
+        AlertDialog.Builder(this)
+            .setTitle("Choose an icon")
+            .setItems(iconChoices.toTypedArray()) { _, which ->
+                val chosen = if (which == 0) "" else iconChoices[which]
+                saveTile(index, tile.copy(icon = chosen))
+            }
+            .show()
+    }
+
+    private fun setAccent(index: Int, tile: Tile) {
+        val names = accentPalette.map { it.first }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("Accent color")
+            .setItems(names) { _, which ->
+                saveTile(index, tile.copy(color = accentPalette[which].second))
+            }
+            .show()
+    }
+
+    private fun moveTile(index: Int) {
+        val others = (0 until slotCount).filter { it != index }
+        val labels = others.map { slot ->
+            val t = loadTile(slot)
+            "Slot ${slot + 1}: " + t.label.ifEmpty { "(empty)" }
+        }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("Swap with…")
+            .setItems(labels) { _, which -> swap(index, others[which]) }
+            .show()
+    }
+
+    private fun duplicateTile(tile: Tile) {
+        val empty = (0 until slotCount).firstOrNull { loadTile(it).type == TileType.EMPTY }
+        if (empty == null) {
+            Toast.makeText(this, "No empty slots to duplicate into", Toast.LENGTH_SHORT).show()
+        } else {
+            saveTile(empty, tile.copy())
+        }
+    }
+
+    // ---------------- Assign target (app or URL) ----------------
+
+    private fun configureTile(index: Int, existing: Tile?) {
+        AlertDialog.Builder(this)
+            .setTitle(if (existing == null) "Set up tile ${index + 1}" else "Change target")
+            .setItems(arrayOf("🌐  Website (URL)", "📱  Installed app")) { _, which ->
+                if (which == 0) configureUrl(index, existing) else configureApp(index, existing)
             }
             .show()
     }
@@ -125,7 +316,7 @@ class MainActivity : AppCompatActivity() {
         }
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(48, 24, 48, 0)
+            setPadding(dp(24), dp(12), dp(24), 0)
             addView(labelInput)
             addView(urlInput)
         }
@@ -139,14 +330,23 @@ class MainActivity : AppCompatActivity() {
                         url = "https://$url"
                     }
                     val label = labelInput.text.toString().trim().ifEmpty { url }
-                    saveTile(index, Tile(label, TileType.URL, url))
+                    saveTile(
+                        index,
+                        Tile(
+                            label = label,
+                            type = TileType.URL,
+                            target = url,
+                            icon = existing?.icon?.ifEmpty { "🌐" } ?: "🌐",
+                            color = existing?.color ?: defaultAccent
+                        )
+                    )
                 }
             }
             .setNegativeButton("Cancel", null)
             .show()
     }
 
-    private fun configureApp(index: Int) {
+    private fun configureApp(index: Int, existing: Tile?) {
         val pm = packageManager
         val query = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
         val apps = pm.queryIntentActivities(query, 0)
@@ -164,27 +364,16 @@ class MainActivity : AppCompatActivity() {
             .setTitle("Pick an app")
             .setItems(labels) { _, which ->
                 val (label, pkg) = apps[which]
-                saveTile(index, Tile(label, TileType.APP, pkg))
-            }
-            .show()
-    }
-
-    private fun showTileOptions(index: Int, tile: Tile) {
-        if (tile.type == TileType.EMPTY) {
-            configureTile(index)
-            return
-        }
-        AlertDialog.Builder(this)
-            .setTitle(tile.label.ifEmpty { "Tile ${index + 1}" })
-            .setItems(arrayOf("Edit", "Clear")) { _, which ->
-                when (which) {
-                    0 -> when (tile.type) {
-                        TileType.URL -> configureUrl(index, tile)
-                        TileType.APP -> configureApp(index)
-                        TileType.EMPTY -> configureTile(index)
-                    }
-                    1 -> clearTile(index)
-                }
+                saveTile(
+                    index,
+                    Tile(
+                        label = existing?.label?.ifEmpty { label } ?: label,
+                        type = TileType.APP,
+                        target = pkg,
+                        icon = existing?.icon?.ifEmpty { "📱" } ?: "📱",
+                        color = existing?.color ?: defaultAccent
+                    )
+                )
             }
             .show()
     }
@@ -223,20 +412,35 @@ class MainActivity : AppCompatActivity() {
             webChromeClient = WebChromeClient()
         }
 
-        fun barButton(label: String, onClick: () -> Unit) = Button(this).apply {
+        fun barButton(label: String, bg: Int, fg: Int, onClick: () -> Unit) = Button(this).apply {
             text = label
             isAllCaps = false
+            setTextColor(fg)
+            background = GradientDrawable().apply {
+                cornerRadius = dpf(12f)
+                setColor(bg)
+                setStroke(dp(1), 0x3323B5D3)
+            }
+            stateListAnimator = null
+            layoutParams = LinearLayout.LayoutParams(0, wc, 1f)
+                .apply { setMargins(dp(6), dp(6), dp(6), dp(6)) }
+            setPadding(dp(8), dp(14), dp(8), dp(14))
             setOnClickListener { onClick() }
-            layoutParams = LinearLayout.LayoutParams(0, wc, 1f).apply { setMargins(8, 0, 8, 0) }
         }
 
         val bar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setBackgroundColor(0xFF0B1D2A.toInt())
-            setPadding(8, 8, 8, 8)
-            addView(barButton("‹ Back") { if (web.canGoBack()) web.goBack() })
-            addView(barButton("Refresh") { web.reload() })
-            addView(barButton("Close") { closeWebOverlay() })
+            setPadding(dp(6), dp(4), dp(6), dp(4))
+            addView(barButton("‹  Back", 0xFF17334C.toInt(), 0xFFF5F7FA.toInt()) {
+                if (web.canGoBack()) web.goBack()
+            })
+            addView(barButton("⟳  Refresh", 0xFF17334C.toInt(), 0xFF23B5D3.toInt()) {
+                web.reload()
+            })
+            addView(barButton("✕  Close", 0xFFEB0A1E.toInt(), 0xFFFFFFFF.toInt()) {
+                closeWebOverlay()
+            })
         }
 
         val column = LinearLayout(this).apply {
@@ -283,6 +487,13 @@ class MainActivity : AppCompatActivity() {
         // On the home grid: intentionally do nothing (keep operators in the launcher)
     }
 
-    data class Tile(val label: String, val type: TileType, val target: String)
+    data class Tile(
+        val label: String,
+        val type: TileType,
+        val target: String,
+        val icon: String = "",
+        val color: Int = 0xFF23B5D3.toInt()
+    )
+
     enum class TileType { EMPTY, URL, APP }
 }
