@@ -992,6 +992,12 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 override fun onPageFinished(view: WebView, url: String?) {
+                    override fun onPageFinished(view: WebView, url: String?) {
+    injectLogin(view, tile)
+    if (tile.keepAlive) injectKeepAlive(view)
+    webHandler.postDelayed({ injectLogin(view, tile) }, 1200L)
+    probeCapabilities(view)   // <-- add this line
+}
                     injectLogin(view, tile)
                     if (tile.keepAlive) injectKeepAlive(view)
                     webHandler.postDelayed({ injectLogin(view, tile) }, 1200L)
@@ -1040,6 +1046,26 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+    // TEMPORARY DIAGNOSTIC — reports which rendering/transport features the engine
+// actually supports. Remove once the map issue is understood.
+private fun probeCapabilities(web: WebView) {
+    val js = listOf(
+        "(function(){",
+        "var r={};",
+        "try{r.ws=(typeof WebSocket!=='undefined');}catch(e){r.ws=false;}",
+        "try{r.ro=(typeof ResizeObserver!=='undefined');}catch(e){r.ro=false;}",
+        "try{r.io=(typeof IntersectionObserver!=='undefined');}catch(e){r.io=false;}",
+        "try{r.oc=(typeof OffscreenCanvas!=='undefined');}catch(e){r.oc=false;}",
+        "try{var c=document.createElement('canvas');",
+        "r.gl1=!!(c.getContext('webgl')||c.getContext('experimental-webgl'));",
+        "r.gl2=!!c.getContext('webgl2');}catch(e){r.gl1=false;r.gl2=false;}",
+        "return 'WS='+r.ws+' RO='+r.ro+' IO='+r.io+' OC='+r.oc+' GL1='+r.gl1+' GL2='+r.gl2;",
+        "})();"
+    ).joinToString(nl)
+    web.evaluateJavascript(js) { result ->
+        Toast.makeText(this, "CAPS " + result, Toast.LENGTH_LONG).show()
+    }
+}
         // Register the polyfill to run at document start (preferred path).
         installPolyfills(web, tile)
 
