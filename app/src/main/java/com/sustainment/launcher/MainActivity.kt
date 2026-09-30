@@ -8,20 +8,26 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.text.InputType
+import android.util.Base64
 import android.view.Gravity
 import android.view.ViewGroup
+import android.webkit.CookieManager
 import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.GridLayout
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.security.crypto.EncryptedSharedPreferences
+import androidx.security.crypto.MasterKey
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -32,6 +38,7 @@ class MainActivity : AppCompatActivity() {
     private val slotCount = 8   // number of tiles on the grid
     private val columns = 2     // change to 3 for smaller tiles
     private val defaultAccent = 0xFF23B5D3.toInt() // MiR cyan
+    private val keepAliveMs = 120000L // fetch() keep-alive ping cadence (2 min)
     // ==================================================
 
     // Newline built from a char code so no backslash escape exists in source.
@@ -53,18 +60,25 @@ class MainActivity : AppCompatActivity() {
     )
 
     private lateinit var prefs: SharedPreferences
+    private lateinit var securePrefs: SharedPreferences
     private lateinit var grid: GridLayout
 
     private var webOverlay: ViewGroup? = null
     private var currentWeb: WebView? = null
+    private var refreshRunnable: Runnable? = null
 
     private val clockHandler = Handler(Looper.getMainLooper())
+    private val webHandler = Handler(Looper.getMainLooper())
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
         prefs = getSharedPreferences("tiles", MODE_PRIVATE)
+        securePrefs = initSecurePrefs()
+
+        // Persist cookies across overlay open/close and app restarts.
+        CookieManager.getInstance().setAcceptCookie(true)
 
         grid = findViewById(R.id.grid)
         grid.columnCount = columns
@@ -72,6 +86,26 @@ class MainActivity : AppCompatActivity() {
 
         findViewById<Button>(R.id.btnStock).setOnClickListener { openStockLauncher() }
         startClock()
+    }
+
+    // ---------------- Encrypted storage for credentials ----------------
+
+    private fun initSecurePrefs(): SharedPreferences {
+        return try {
+            val key = MasterKey.Builder(this)
+                .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+                .build()
+            EncryptedSharedPreferences.create(
+                this,
+                "tiles_secure",
+                key,
+                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+            )
+        } catch (e: Exception) {
+            // Fallback so the app still runs if keystore init fails on a device.
+            getSharedPreferences("tiles_secure_fallback", MODE_PRIVATE)
+        }
     }
 
     // ---------------- Dimension helpers ----------------
@@ -95,6 +129,8 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         clockHandler.removeCallbacksAndMessages(null)
+        webHandler.removeCallbacksAndMessages(null)
+        CookieManager.getInstance().flush()
         super.onDestroy()
     }
 
@@ -169,7 +205,11 @@ class MainActivity : AppCompatActivity() {
         val target = prefs.getString("tile_${i}_target", "") ?: ""
         val icon = prefs.getString("tile_${i}_icon", "") ?: ""
         val color = prefs.getInt("tile_${i}_color", defaultAccent)
-        return Tile(label, TileType.valueOf(type), target, icon, color)
+        val refresh = prefs.getInt("tile_${i}_refresh", 0)
+        val keep = prefs.getBoolean("tile_${i}_keep", false)
+        val user = securePrefs.getString("tile_${i}_user", "") ?: ""
+        val pass = securePrefs.getString("tile_${i}_pass", "") ?: ""
+        return Tile(label, TileType.valueOf(type), target, icon, color, user, pass, refresh, keep)
     }
 
     private fun saveTile(i: Int, tile: Tile, render: Boolean = true) {
@@ -179,6 +219,12 @@ class MainActivity : AppCompatActivity() {
             .putString("tile_${i}_target", tile.target)
             .putString("tile_${i}_icon", tile.icon)
             .putInt("tile_${i}_color", tile.color)
+            .putInt("tile_${i}_refresh", tile.refreshSecs)
+            .putBoolean("tile_${i}_keep", tile.keepAlive)
+            .apply()
+        securePrefs.edit()
+            .putString("tile_${i}_user", tile.user)
+            .putString("tile_${i}_pass", tile.pass)
             .apply()
         if (render) renderTiles()
     }
@@ -190,6 +236,12 @@ class MainActivity : AppCompatActivity() {
             .remove("tile_${i}_target")
             .remove("tile_${i}_icon")
             .remove("tile_${i}_color")
+            .remove("tile_${i}_refresh")
+            .remove("tile_${i}_keep")
+            .apply()
+        securePrefs.edit()
+            .remove("tile_${i}_user")
+            .remove("tile_${i}_pass")
             .apply()
         renderTiles()
     }
@@ -309,24 +361,65 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun configureUrl(index: Int, existing: Tile?) {
-        val labelInput = EditText(this).apply {
-            hint = "Label (e.g. CMMS)"
-            setText(existing?.label ?: "")
+        val isUrl = existing?.type == TileType.URL
+
+        fun field(hintText: String, value: String, type: Int): EditText = EditText(this).apply {
+            hint = hintText
+            inputType = type
+            setText(value)
         }
-        val urlInput = EditText(this).apply {
-            hint = "https://..."
-            inputType = InputType.TYPE_TEXT_VARIATION_URI
-            setText(if (existing?.type == TileType.URL) existing.target else "https://")
+
+        val labelInput = field("Label (e.g. CMMS)", existing?.label ?: "", InputType.TYPE_CLASS_TEXT)
+        val urlInput = field(
+            "https://...",
+            if (isUrl) existing!!.target else "https://",
+            InputType.TYPE_TEXT_VARIATION_URI
+        )
+        val userInput = field(
+            "Login username (optional)",
+            if (isUrl) existing!!.user else "",
+            InputType.TYPE_CLASS_TEXT
+        )
+        val passInput = field(
+            "Login password (optional)",
+            if (isUrl) existing!!.pass else "",
+            InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
+        )
+        val refreshInput = field(
+            "Auto-refresh minutes (0 = off)",
+            if (isUrl && existing!!.refreshSecs > 0) (existing.refreshSecs / 60).toString() else "",
+            InputType.TYPE_CLASS_NUMBER
+        )
+        val keepBox = CheckBox(this).apply {
+            text = "Keep session alive (background ping)"
+            isChecked = isUrl && existing!!.keepAlive
         }
+
+        fun sectionLabel(txt: String) = TextView(this).apply {
+            text = txt
+            setPadding(0, dp(14), 0, dp(2))
+            setTextColor(0xFF23B5D3.toInt())
+            textSize = 13f
+        }
+
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(24), dp(12), dp(24), 0)
             addView(labelInput)
             addView(urlInput)
+            addView(sectionLabel("Auto-login (optional)"))
+            addView(userInput)
+            addView(passInput)
+            addView(sectionLabel("Session"))
+            addView(refreshInput)
+            addView(keepBox)
         }
+
+        val scroller = ScrollView(this).apply { addView(box) }
+
         AlertDialog.Builder(this)
             .setTitle("Website tile")
-            .setView(box)
+            .setView(scroller)
             .setPositiveButton("Save") { _, _ ->
                 var url = urlInput.text.toString().trim()
                 if (url.isNotEmpty()) {
@@ -334,6 +427,7 @@ class MainActivity : AppCompatActivity() {
                         url = "https://$url"
                     }
                     val label = labelInput.text.toString().trim().ifEmpty { url }
+                    val minutes = refreshInput.text.toString().trim().toIntOrNull() ?: 0
                     saveTile(
                         index,
                         Tile(
@@ -341,7 +435,11 @@ class MainActivity : AppCompatActivity() {
                             type = TileType.URL,
                             target = url,
                             icon = existing?.icon?.ifEmpty { "🌐" } ?: "🌐",
-                            color = existing?.color ?: defaultAccent
+                            color = existing?.color ?: defaultAccent,
+                            user = userInput.text.toString(),
+                            pass = passInput.text.toString(),
+                            refreshSecs = if (minutes > 0) minutes * 60 else 0,
+                            keepAlive = keepBox.isChecked
                         )
                     )
                 }
@@ -386,7 +484,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun launch(tile: Tile) {
         when (tile.type) {
-            TileType.URL -> openWebOverlay(tile.target)
+            TileType.URL -> openWebOverlay(tile)
             TileType.APP -> {
                 val intent = packageManager.getLaunchIntentForPackage(tile.target)
                 if (intent != null) {
@@ -399,9 +497,48 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // ---------------- Auto-login + keep-alive injection ----------------
+
+    private fun injectLogin(web: WebView, tile: Tile) {
+        if (tile.user.isEmpty() && tile.pass.isEmpty()) return
+        val u64 = Base64.encodeToString(tile.user.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+        val p64 = Base64.encodeToString(tile.pass.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+        val js = listOf(
+            "(function(){",
+            "try{",
+            "if(window.__li){return;}",
+            "function dec(b){try{return decodeURIComponent(escape(atob(b)));}catch(e){return atob(b);}}",
+            "var U=dec('$u64');",
+            "var P=dec('$p64');",
+            "var pw=document.querySelector('input[type=password]');",
+            "if(!pw){return;}",
+            "var scope=pw.form||document;",
+            "var user=scope.querySelector('input[type=text],input[type=email],input[type=tel],input:not([type])');",
+            "function setVal(el,val){ if(!el)return; try{el.focus();}catch(e){} el.value=val; el.dispatchEvent(new Event('input',{bubbles:true})); el.dispatchEvent(new Event('change',{bubbles:true})); }",
+            "if(U){ setVal(user,U); }",
+            "if(P){ setVal(pw,P); }",
+            "window.__li=true;",
+            "var f=pw.form;",
+            "if(f){ var btn=f.querySelector('button[type=submit],input[type=submit]')||f.querySelector('button'); if(btn){ btn.click(); } else { try{f.submit();}catch(e){} } }",
+            "}catch(e){}",
+            "})();"
+        ).joinToString(nl)
+        web.evaluateJavascript(js, null)
+    }
+
+    private fun injectKeepAlive(web: WebView) {
+        val js = listOf(
+            "(function(){",
+            "if(window.__ka){return;}",
+            "window.__ka=setInterval(function(){ try{ fetch(location.href,{credentials:'include',cache:'no-store'}); }catch(e){} }, $keepAliveMs);",
+            "})();"
+        ).joinToString(nl)
+        web.evaluateJavascript(js, null)
+    }
+
     // ---------------- Full-screen web overlay ----------------
 
-    private fun openWebOverlay(url: String) {
+    private fun openWebOverlay(tile: Tile) {
         if (webOverlay != null) return
 
         val mp = ViewGroup.LayoutParams.MATCH_PARENT
@@ -412,8 +549,20 @@ class MainActivity : AppCompatActivity() {
             settings.domStorageEnabled = true
             settings.useWideViewPort = true
             settings.loadWithOverviewMode = true
-            webViewClient = WebViewClient()       // keep navigation inside the launcher
             webChromeClient = WebChromeClient()
+            webViewClient = object : WebViewClient() {
+                override fun onPageFinished(view: WebView, url: String?) {
+                    injectLogin(view, tile)
+                    if (tile.keepAlive) injectKeepAlive(view)
+                    // Retry once for forms that render slightly after page load.
+                    webHandler.postDelayed({ injectLogin(view, tile) }, 1200L)
+                }
+            }
+        }
+
+        CookieManager.getInstance().apply {
+            setAcceptCookie(true)
+            setAcceptThirdPartyCookies(web, true)
         }
 
         fun barButton(label: String, bg: Int, fg: Int, onClick: () -> Unit) = Button(this).apply {
@@ -462,10 +611,26 @@ class MainActivity : AppCompatActivity() {
         addContentView(container, FrameLayout.LayoutParams(mp, mp))
         webOverlay = container
         currentWeb = web
-        web.loadUrl(url)
+        web.loadUrl(tile.target)
+
+        // Optional full-page auto-refresh.
+        if (tile.refreshSecs > 0) {
+            val r = object : Runnable {
+                override fun run() {
+                    currentWeb?.reload()
+                    webHandler.postDelayed(this, tile.refreshSecs * 1000L)
+                }
+            }
+            refreshRunnable = r
+            webHandler.postDelayed(r, tile.refreshSecs * 1000L)
+        }
     }
 
     private fun closeWebOverlay() {
+        refreshRunnable?.let { webHandler.removeCallbacks(it) }
+        refreshRunnable = null
+        webHandler.removeCallbacksAndMessages(null)
+        CookieManager.getInstance().flush()
         webOverlay?.let { (it.parent as? ViewGroup)?.removeView(it) }
         currentWeb?.destroy()
         webOverlay = null
@@ -496,7 +661,11 @@ class MainActivity : AppCompatActivity() {
         val type: TileType,
         val target: String,
         val icon: String = "",
-        val color: Int = 0xFF23B5D3.toInt()
+        val color: Int = 0xFF23B5D3.toInt(),
+        val user: String = "",
+        val pass: String = "",
+        val refreshSecs: Int = 0,
+        val keepAlive: Boolean = false
     )
 
     enum class TileType { EMPTY, URL, APP }
