@@ -34,6 +34,9 @@ class MainActivity : AppCompatActivity() {
     private val defaultAccent = 0xFF23B5D3.toInt() // MiR cyan
     // ==================================================
 
+    // Newline built from a char code so no backslash escape exists in source.
+    private val nl = Char(10).toString()
+
     // Color-code tiles by system (maintenance zone, CMMS, docs, safety, etc.)
     private val accentPalette = listOf(
         "Toyota Red" to 0xFFEB0A1E.toInt(),
@@ -106,11 +109,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun makeButton(index: Int, tile: Tile): Button {
         val isEmpty = tile.type == TileType.EMPTY
-        val nl = "
-"  // single, guaranteed newline literal
         return Button(this).apply {
             text = if (isEmpty) {
-                "＋${nl}Tap to set up"
+                "＋" + nl + "Tap to set up"
             } else buildString {
                 if (tile.icon.isNotEmpty()) {
                     append(tile.icon)
