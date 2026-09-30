@@ -44,6 +44,13 @@ class MainActivity : AppCompatActivity() {
     // Newline built from a char code so no backslash escape exists in source.
     private val nl = Char(10).toString()
 
+    // Plants: code used for storage keys, plus a display name.
+    private val plants = listOf(
+        Plant("west", "West Plant", 0xFFEB0A1E.toInt()),
+        Plant("east", "East Plant", 0xFF23B5D3.toInt())
+    )
+    private var currentPlant: Plant? = null
+
     // Color-code tiles by system (maintenance zone, CMMS, docs, safety, etc.)
     private val accentPalette = listOf(
         "Toyota Red" to 0xFFEB0A1E.toInt(),
@@ -66,6 +73,7 @@ class MainActivity : AppCompatActivity() {
     private var webOverlay: ViewGroup? = null
     private var currentWeb: WebView? = null
     private var refreshRunnable: Runnable? = null
+    private var plantOverlay: ViewGroup? = null
 
     private val clockHandler = Handler(Looper.getMainLooper())
     private val webHandler = Handler(Looper.getMainLooper())
@@ -82,11 +90,18 @@ class MainActivity : AppCompatActivity() {
 
         grid = findViewById(R.id.grid)
         grid.columnCount = columns
-        renderTiles()
 
         findViewById<Button>(R.id.btnStock).setOnClickListener { openStockLauncher() }
+        findViewById<Button>(R.id.btnSwitchPlant).setOnClickListener { showPlantChooser() }
         startClock()
+
+        // Start on the plant chooser.
+        showPlantChooser()
     }
+
+    // ---------------- Storage key namespacing per plant ----------------
+
+    private fun prefix(): String = (currentPlant?.code ?: "west") + "_"
 
     // ---------------- Encrypted storage for credentials ----------------
 
@@ -103,7 +118,6 @@ class MainActivity : AppCompatActivity() {
                 EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
             )
         } catch (e: Exception) {
-            // Fallback so the app still runs if keystore init fails on a device.
             getSharedPreferences("tiles_secure_fallback", MODE_PRIVATE)
         }
     }
@@ -132,6 +146,86 @@ class MainActivity : AppCompatActivity() {
         webHandler.removeCallbacksAndMessages(null)
         CookieManager.getInstance().flush()
         super.onDestroy()
+    }
+
+    // ---------------- Plant chooser ----------------
+
+    private fun showPlantChooser() {
+        if (plantOverlay != null) return
+
+        val mp = ViewGroup.LayoutParams.MATCH_PARENT
+        val wc = ViewGroup.LayoutParams.WRAP_CONTENT
+
+        val title = TextView(this).apply {
+            text = "SELECT PLANT"
+            setTextColor(0xFFF5F7FA.toInt())
+            textSize = 28f
+            gravity = Gravity.CENTER
+            letterSpacing = 0.08f
+            setPadding(0, 0, 0, dp(8))
+        }
+
+        val subtitle = TextView(this).apply {
+            text = "AMR · AGV Fleet Sustainment"
+            setTextColor(0xFF23B5D3.toInt())
+            textSize = 14f
+            gravity = Gravity.CENTER
+            setPadding(0, 0, 0, dp(40))
+        }
+
+        fun plantButton(plant: Plant) = Button(this).apply {
+            text = plant.name
+            isAllCaps = false
+            textSize = 24f
+            setTextColor(0xFFF5F7FA.toInt())
+            background = GradientDrawable(
+                GradientDrawable.Orientation.TL_BR,
+                intArrayOf(0xFF17334C.toInt(), 0xFF0E2131.toInt())
+            ).apply {
+                cornerRadius = dpf(22f)
+                setStroke(dp(3), plant.color)
+            }
+            stateListAnimator = null
+            elevation = dpf(4f)
+            layoutParams = LinearLayout.LayoutParams(mp, dp(120))
+                .apply { setMargins(dp(24), dp(12), dp(24), dp(12)) }
+            setOnClickListener { selectPlant(plant) }
+        }
+
+        val column = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            layoutParams = FrameLayout.LayoutParams(mp, mp)
+            setPadding(dp(24), dp(24), dp(24), dp(24))
+
+            // Accent bar
+            addView(View(this@MainActivity).apply {
+                setBackgroundResource(R.drawable.header_accent)
+                layoutParams = LinearLayout.LayoutParams(dp(160), dp(4))
+                    .apply { setMargins(0, 0, 0, dp(28)); gravity = Gravity.CENTER_HORIZONTAL }
+            })
+            addView(title)
+            addView(subtitle)
+            plants.forEach { addView(plantButton(it)) }
+        }
+
+        val container = FrameLayout(this).apply {
+            setBackgroundResource(R.drawable.bg_app)
+            isClickable = true // swallow taps to what's behind
+            addView(column)
+        }
+
+        addContentView(container, FrameLayout.LayoutParams(mp, mp))
+        plantOverlay = container
+    }
+
+    private fun selectPlant(plant: Plant) {
+        currentPlant = plant
+        findViewById<TextView>(R.id.plantLabel).text =
+            plant.name + "  ·  AMR / AGV Sustainment"
+        plantOverlay?.let { (it.parent as? ViewGroup)?.removeView(it) }
+        plantOverlay = null
+        renderTiles()
     }
 
     // ---------------- Grid rendering ----------------
@@ -200,48 +294,51 @@ class MainActivity : AppCompatActivity() {
     // ---------------- Persistence ----------------
 
     private fun loadTile(i: Int): Tile {
-        val type = prefs.getString("tile_${i}_type", TileType.EMPTY.name) ?: TileType.EMPTY.name
-        val label = prefs.getString("tile_${i}_label", "") ?: ""
-        val target = prefs.getString("tile_${i}_target", "") ?: ""
-        val icon = prefs.getString("tile_${i}_icon", "") ?: ""
-        val color = prefs.getInt("tile_${i}_color", defaultAccent)
-        val refresh = prefs.getInt("tile_${i}_refresh", 0)
-        val keep = prefs.getBoolean("tile_${i}_keep", false)
-        val user = securePrefs.getString("tile_${i}_user", "") ?: ""
-        val pass = securePrefs.getString("tile_${i}_pass", "") ?: ""
+        val p = prefix()
+        val type = prefs.getString("${p}tile_${i}_type", TileType.EMPTY.name) ?: TileType.EMPTY.name
+        val label = prefs.getString("${p}tile_${i}_label", "") ?: ""
+        val target = prefs.getString("${p}tile_${i}_target", "") ?: ""
+        val icon = prefs.getString("${p}tile_${i}_icon", "") ?: ""
+        val color = prefs.getInt("${p}tile_${i}_color", defaultAccent)
+        val refresh = prefs.getInt("${p}tile_${i}_refresh", 0)
+        val keep = prefs.getBoolean("${p}tile_${i}_keep", false)
+        val user = securePrefs.getString("${p}tile_${i}_user", "") ?: ""
+        val pass = securePrefs.getString("${p}tile_${i}_pass", "") ?: ""
         return Tile(label, TileType.valueOf(type), target, icon, color, user, pass, refresh, keep)
     }
 
     private fun saveTile(i: Int, tile: Tile, render: Boolean = true) {
+        val p = prefix()
         prefs.edit()
-            .putString("tile_${i}_type", tile.type.name)
-            .putString("tile_${i}_label", tile.label)
-            .putString("tile_${i}_target", tile.target)
-            .putString("tile_${i}_icon", tile.icon)
-            .putInt("tile_${i}_color", tile.color)
-            .putInt("tile_${i}_refresh", tile.refreshSecs)
-            .putBoolean("tile_${i}_keep", tile.keepAlive)
+            .putString("${p}tile_${i}_type", tile.type.name)
+            .putString("${p}tile_${i}_label", tile.label)
+            .putString("${p}tile_${i}_target", tile.target)
+            .putString("${p}tile_${i}_icon", tile.icon)
+            .putInt("${p}tile_${i}_color", tile.color)
+            .putInt("${p}tile_${i}_refresh", tile.refreshSecs)
+            .putBoolean("${p}tile_${i}_keep", tile.keepAlive)
             .apply()
         securePrefs.edit()
-            .putString("tile_${i}_user", tile.user)
-            .putString("tile_${i}_pass", tile.pass)
+            .putString("${p}tile_${i}_user", tile.user)
+            .putString("${p}tile_${i}_pass", tile.pass)
             .apply()
         if (render) renderTiles()
     }
 
     private fun clearTile(i: Int) {
+        val p = prefix()
         prefs.edit()
-            .remove("tile_${i}_type")
-            .remove("tile_${i}_label")
-            .remove("tile_${i}_target")
-            .remove("tile_${i}_icon")
-            .remove("tile_${i}_color")
-            .remove("tile_${i}_refresh")
-            .remove("tile_${i}_keep")
+            .remove("${p}tile_${i}_type")
+            .remove("${p}tile_${i}_label")
+            .remove("${p}tile_${i}_target")
+            .remove("${p}tile_${i}_icon")
+            .remove("${p}tile_${i}_color")
+            .remove("${p}tile_${i}_refresh")
+            .remove("${p}tile_${i}_keep")
             .apply()
         securePrefs.edit()
-            .remove("tile_${i}_user")
-            .remove("tile_${i}_pass")
+            .remove("${p}tile_${i}_user")
+            .remove("${p}tile_${i}_pass")
             .apply()
         renderTiles()
     }
@@ -253,6 +350,9 @@ class MainActivity : AppCompatActivity() {
         saveTile(b, ta, render = false)
         renderTiles()
     }
+
+    private fun firstEmptySlot(): Int? =
+        (0 until slotCount).firstOrNull { loadTile(it).type == TileType.EMPTY }
 
     // ---------------- Long-press options ----------------
 
@@ -341,7 +441,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun duplicateTile(tile: Tile) {
-        val empty = (0 until slotCount).firstOrNull { loadTile(it).type == TileType.EMPTY }
+        val empty = firstEmptySlot()
         if (empty == null) {
             Toast.makeText(this, "No empty slots to duplicate into", Toast.LENGTH_SHORT).show()
         } else {
@@ -512,14 +612,14 @@ class MainActivity : AppCompatActivity() {
             "var P=dec('$p64');",
             "var pw=document.querySelector('input[type=password]');",
             "if(!pw){return;}",
-            "var scope=pw.form||document;",
+            "var scope=pw.formdocument;",
             "var user=scope.querySelector('input[type=text],input[type=email],input[type=tel],input:not([type])');",
             "function setVal(el,val){ if(!el)return; try{el.focus();}catch(e){} el.value=val; el.dispatchEvent(new Event('input',{bubbles:true})); el.dispatchEvent(new Event('change',{bubbles:true})); }",
             "if(U){ setVal(user,U); }",
             "if(P){ setVal(pw,P); }",
             "window.__li=true;",
             "var f=pw.form;",
-            "if(f){ var btn=f.querySelector('button[type=submit],input[type=submit]')||f.querySelector('button'); if(btn){ btn.click(); } else { try{f.submit();}catch(e){} } }",
+            "if(f){ var btn=f.querySelector('button[type=submit],input[type=submit]')f.querySelector('button'); if(btn){ btn.click(); } else { try{f.submit();}catch(e){} } }",
             "}catch(e){}",
             "})();"
         ).joinToString(nl)
@@ -534,6 +634,52 @@ class MainActivity : AppCompatActivity() {
             "})();"
         ).joinToString(nl)
         web.evaluateJavascript(js, null)
+    }
+
+    // ---------------- Save current page as a tile ----------------
+
+    private fun saveCurrentPageAsTile(url: String, pageTitle: String?) {
+        val slot = firstEmptySlot()
+        if (slot == null) {
+            Toast.makeText(this, "No empty slots on this plant's grid", Toast.LENGTH_LONG).show()
+            return
+        }
+        val labelInput = EditText(this).apply {
+            hint = "Tile name"
+            setText(pageTitle?.trim().takeUnless { it.isNullOrEmpty() } ?: url)
+            setSelection(text.length)
+        }
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(24), dp(12), dp(24), 0)
+            addView(TextView(this@MainActivity).apply {
+                text = url
+                setTextColor(0xFF9FB3C8.toInt())
+                textSize = 12f
+                setPadding(0, 0, 0, dp(8))
+            })
+            addView(labelInput)
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Save page to " + (currentPlant?.name ?: "grid"))
+            .setView(box)
+            .setPositiveButton("Save") { _, _ ->
+                val label = labelInput.text.toString().trim().ifEmpty { url }
+                saveTile(
+                    slot,
+                    Tile(
+                        label = label,
+                        type = TileType.URL,
+                        target = url,
+                        icon = "🌐",
+                        color = defaultAccent
+                    ),
+                    render = false // grid is behind the overlay; refresh on close
+                )
+                Toast.makeText(this, "Saved to slot ${slot + 1}", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     // ---------------- Full-screen web overlay ----------------
@@ -554,7 +700,6 @@ class MainActivity : AppCompatActivity() {
                 override fun onPageFinished(view: WebView, url: String?) {
                     injectLogin(view, tile)
                     if (tile.keepAlive) injectKeepAlive(view)
-                    // Retry once for forms that render slightly after page load.
                     webHandler.postDelayed({ injectLogin(view, tile) }, 1200L)
                 }
             }
@@ -569,6 +714,7 @@ class MainActivity : AppCompatActivity() {
             text = label
             isAllCaps = false
             setTextColor(fg)
+            textSize = 15f
             background = GradientDrawable().apply {
                 cornerRadius = dpf(12f)
                 setColor(bg)
@@ -576,8 +722,8 @@ class MainActivity : AppCompatActivity() {
             }
             stateListAnimator = null
             layoutParams = LinearLayout.LayoutParams(0, wc, 1f)
-                .apply { setMargins(dp(6), dp(6), dp(6), dp(6)) }
-            setPadding(dp(8), dp(14), dp(8), dp(14))
+                .apply { setMargins(dp(5), dp(6), dp(5), dp(6)) }
+            setPadding(dp(6), dp(14), dp(6), dp(14))
             setOnClickListener { onClick() }
         }
 
@@ -588,8 +734,16 @@ class MainActivity : AppCompatActivity() {
             addView(barButton("‹  Back", 0xFF17334C.toInt(), 0xFFF5F7FA.toInt()) {
                 if (web.canGoBack()) web.goBack()
             })
-            addView(barButton("⟳  Refresh", 0xFF17334C.toInt(), 0xFF23B5D3.toInt()) {
+            addView(barButton("⟳  Reload", 0xFF17334C.toInt(), 0xFF23B5D3.toInt()) {
                 web.reload()
+            })
+            addView(barButton("＋  Save", 0xFF17334C.toInt(), 0xFF27AE60.toInt()) {
+                val u = web.url
+                if (u.isNullOrEmpty()) {
+                    Toast.makeText(this@MainActivity, "No page to save yet", Toast.LENGTH_SHORT).show()
+                } else {
+                    saveCurrentPageAsTile(u, web.title)
+                }
             })
             addView(barButton("✕  Close", 0xFFEB0A1E.toInt(), 0xFFFFFFFF.toInt()) {
                 closeWebOverlay()
@@ -613,7 +767,6 @@ class MainActivity : AppCompatActivity() {
         currentWeb = web
         web.loadUrl(tile.target)
 
-        // Optional full-page auto-refresh.
         if (tile.refreshSecs > 0) {
             val r = object : Runnable {
                 override fun run() {
@@ -635,6 +788,7 @@ class MainActivity : AppCompatActivity() {
         currentWeb?.destroy()
         webOverlay = null
         currentWeb = null
+        renderTiles() // reflect any page saved while browsing
     }
 
     // ---------------- System behaviour ----------------
@@ -653,8 +807,10 @@ class MainActivity : AppCompatActivity() {
             if (web.canGoBack()) web.goBack() else closeWebOverlay()
             return
         }
-        // On the home grid: intentionally do nothing (keep operators in the launcher)
+        // On the plant chooser or home grid: intentionally do nothing.
     }
+
+    data class Plant(val code: String, val name: String, val color: Int)
 
     data class Tile(
         val label: String,
