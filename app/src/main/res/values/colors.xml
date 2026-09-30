@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="bg_deep">#0A1622</color>
+    <color name="bg_deep_2">#0F2A3F</color>
+    <color name="surface">#12263A</color>
+    <color name="toyota_red">#EB0A1E</color>
+    <color name="mir_cyan">#23B5D3</color>
+    <color name="text_primary">#F5F7FA</color>
+    <color name="text_muted">#9FB3C8</color>
+</resources>
