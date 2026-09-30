@@ -4,6 +4,7 @@ import android.content.Intent
 import android.content.SharedPreferences
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
+import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -26,10 +27,13 @@ import android.widget.TextView
 import android.widget.Toast
 import android.view.View
 import androidx.activity.OnBackPressedCallback
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import org.json.JSONArray
+import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -48,6 +52,10 @@ class MainActivity : AppCompatActivity() {
 
     // Key for remembering the last-used plant across app restarts.
     private val lastPlantKey = "last_plant"
+
+    // Identifier written into exported config files so import can validate them.
+    private val configFormatId = "sustainment-launcher-config"
+    private val configVersion = 1
 
     // Set true if encrypted storage could not initialize and we fell back to plaintext.
     private var secureStorageInsecure = false
@@ -85,6 +93,15 @@ class MainActivity : AppCompatActivity() {
 
     private val clockHandler = Handler(Looper.getMainLooper())
     private val webHandler = Handler(Looper.getMainLooper())
+
+    // SAF launchers for config export/import. Registered during activity construction.
+    private val exportLauncher = registerForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json")
+    ) { uri: Uri? -> uri?.let { writeExport(it) } }
+
+    private val importLauncher = registerForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? -> uri?.let { readImport(it) } }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -253,6 +270,23 @@ class MainActivity : AppCompatActivity() {
             setOnClickListener { selectPlant(plant) }
         }
 
+        fun adminButton(lbl: String, onClick: () -> Unit) = Button(this).apply {
+            text = lbl
+            isAllCaps = false
+            textSize = 15f
+            setTextColor(0xFF23B5D3.toInt())
+            background = GradientDrawable().apply {
+                cornerRadius = dpf(14f)
+                setColor(0xFF12263A.toInt())
+                setStroke(dp(1), 0xFF23B5D3.toInt())
+            }
+            stateListAnimator = null
+            layoutParams = LinearLayout.LayoutParams(mp, wc)
+                .apply { setMargins(dp(24), dp(8), dp(24), 0) }
+            setPadding(dp(10), dp(12), dp(10), dp(12))
+            setOnClickListener { onClick() }
+        }
+
         val column = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
@@ -268,6 +302,17 @@ class MainActivity : AppCompatActivity() {
             addView(title)
             addView(subtitle)
             plants.forEach { addView(plantButton(it)) }
+
+            // Admin: config export / import (both plants, includes credentials).
+            addView(View(this@MainActivity).apply {
+                layoutParams = LinearLayout.LayoutParams(mp, dp(16))
+            })
+            addView(adminButton("⬆  Export config (both plants)") {
+                exportLauncher.launch("sustainment-config.json")
+            })
+            addView(adminButton("⬇  Import config (replace all)") {
+                importLauncher.launch(arrayOf("*/*"))
+            })
         }
 
         val container = FrameLayout(this).apply {
@@ -357,8 +402,10 @@ class MainActivity : AppCompatActivity() {
 
     // ---------------- Persistence ----------------
 
-    private fun loadTile(i: Int): Tile {
-        val p = prefix()
+    private fun loadTile(i: Int): Tile = loadTileAt(prefix(), i)
+
+    // Prefix-aware tile load so we can read any plant regardless of currentPlant.
+    private fun loadTileAt(p: String, i: Int): Tile {
         val type = prefs.getString("${p}tile_${i}_type", TileType.EMPTY.name) ?: TileType.EMPTY.name
         val label = prefs.getString("${p}tile_${i}_label", "") ?: ""
         val target = prefs.getString("${p}tile_${i}_target", "") ?: ""
@@ -372,7 +419,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun saveTile(i: Int, tile: Tile, render: Boolean = true) {
-        val p = prefix()
+        saveTileAt(prefix(), i, tile)
+        if (render) renderTiles()
+    }
+
+    // Prefix-aware tile save so we can write any plant regardless of currentPlant.
+    private fun saveTileAt(p: String, i: Int, tile: Tile) {
         prefs.edit()
             .putString("${p}tile_${i}_type", tile.type.name)
             .putString("${p}tile_${i}_label", tile.label)
@@ -386,11 +438,15 @@ class MainActivity : AppCompatActivity() {
             .putString("${p}tile_${i}_user", tile.user)
             .putString("${p}tile_${i}_pass", tile.pass)
             .apply()
-        if (render) renderTiles()
     }
 
     private fun clearTile(i: Int) {
-        val p = prefix()
+        clearTileAt(prefix(), i)
+        renderTiles()
+    }
+
+    // Prefix-aware tile clear so we can wipe any plant regardless of currentPlant.
+    private fun clearTileAt(p: String, i: Int) {
         prefs.edit()
             .remove("${p}tile_${i}_type")
             .remove("${p}tile_${i}_label")
@@ -404,7 +460,6 @@ class MainActivity : AppCompatActivity() {
             .remove("${p}tile_${i}_user")
             .remove("${p}tile_${i}_pass")
             .apply()
-        renderTiles()
     }
 
     private fun swap(a: Int, b: Int) {
@@ -417,6 +472,130 @@ class MainActivity : AppCompatActivity() {
 
     private fun firstEmptySlot(): Int? =
         (0 until slotCount).firstOrNull { loadTile(it).type == TileType.EMPTY }
+
+    // ---------------- Config export / import ----------------
+
+    private fun buildExportJson(): String {
+        val root = JSONObject()
+        root.put("format", configFormatId)
+        root.put("version", configVersion)
+        root.put("slotCount", slotCount)
+        val plantsObj = JSONObject()
+        for (plant in plants) {
+            val arr = JSONArray()
+            for (i in 0 until slotCount) {
+                val t = loadTileAt(plant.code + "_", i)
+                val o = JSONObject()
+                o.put("slot", i)
+                o.put("type", t.type.name)
+                o.put("label", t.label)
+                o.put("target", t.target)
+                o.put("icon", t.icon)
+                o.put("color", t.color)
+                o.put("refreshSecs", t.refreshSecs)
+                o.put("keepAlive", t.keepAlive)
+                o.put("user", t.user)
+                o.put("pass", t.pass)
+                arr.put(o)
+            }
+            plantsObj.put(plant.code, arr)
+        }
+        root.put("plants", plantsObj)
+        return root.toString(2)
+    }
+
+    private fun writeExport(uri: Uri) {
+        try {
+            val json = buildExportJson()
+            contentResolver.openOutputStream(uri)?.use { os ->
+                os.write(json.toByteArray(Charsets.UTF_8))
+            }
+            Toast.makeText(this, "Config exported", Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            Toast.makeText(
+                this,
+                "Export failed: " + (e.message ?: "unknown error"),
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+
+    private fun readImport(uri: Uri) {
+        try {
+            val text = contentResolver.openInputStream(uri)?.use {
+                it.readBytes().toString(Charsets.UTF_8)
+            } ?: ""
+            if (text.isEmpty()) {
+                Toast.makeText(this, "Import failed: file was empty", Toast.LENGTH_LONG).show()
+                return
+            }
+            val root = JSONObject(text)
+            if (root.optString("format") != configFormatId) {
+                Toast.makeText(
+                    this,
+                    "Import failed: not a Sustainment Launcher config file",
+                    Toast.LENGTH_LONG
+                ).show()
+                return
+            }
+            AlertDialog.Builder(this)
+                .setTitle("Import config?")
+                .setMessage(
+                    "This will REPLACE all tiles and saved credentials for BOTH plants " +
+                        "on this tablet. This cannot be undone."
+                )
+                .setPositiveButton("Replace") { _, _ -> applyImport(root) }
+                .setNegativeButton("Cancel", null)
+                .show()
+        } catch (e: Exception) {
+            Toast.makeText(
+                this,
+                "Import failed: " + (e.message ?: "invalid file"),
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+
+    private fun applyImport(root: JSONObject) {
+        try {
+            val plantsObj = root.getJSONObject("plants")
+            for (plant in plants) {
+                val p = plant.code + "_"
+                // Full replace: clear every slot for this plant first.
+                for (i in 0 until slotCount) clearTileAt(p, i)
+                val arr = plantsObj.optJSONArray(plant.code) ?: continue
+                for (j in 0 until arr.length()) {
+                    val o = arr.getJSONObject(j)
+                    val slot = o.optInt("slot", -1)
+                    if (slot < 0 || slot >= slotCount) continue
+                    val type = runCatching {
+                        TileType.valueOf(o.optString("type", TileType.EMPTY.name))
+                    }.getOrDefault(TileType.EMPTY)
+                    val tile = Tile(
+                        label = o.optString("label", ""),
+                        type = type,
+                        target = o.optString("target", ""),
+                        icon = o.optString("icon", ""),
+                        color = o.optInt("color", defaultAccent),
+                        user = o.optString("user", ""),
+                        pass = o.optString("pass", ""),
+                        refreshSecs = o.optInt("refreshSecs", 0),
+                        keepAlive = o.optBoolean("keepAlive", false)
+                    )
+                    saveTileAt(p, slot, tile)
+                }
+            }
+            // Refresh the grid if a plant is currently displayed.
+            if (currentPlant != null && plantOverlay == null) renderTiles()
+            Toast.makeText(this, "Config imported", Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            Toast.makeText(
+                this,
+                "Import failed: " + (e.message ?: "invalid config"),
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    }
 
     // ---------------- Long-press options ----------------
 
