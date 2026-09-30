@@ -84,7 +84,7 @@ class MainActivity : AppCompatActivity() {
         val runnable = object : Runnable {
             override fun run() {
                 tv.text = fmt.format(Date())
-                clockHandler.postDelayed(this, 1000)
+                clockHandler.postDelayed(this, 1000L)
             }
         }
         clockHandler.post(runnable)
@@ -106,13 +106,16 @@ class MainActivity : AppCompatActivity() {
 
     private fun makeButton(index: Int, tile: Tile): Button {
         val isEmpty = tile.type == TileType.EMPTY
+        val nl = "
+"  // single, guaranteed newline literal
         return Button(this).apply {
             text = if (isEmpty) {
-                "＋
-Tap to set up"
+                "＋${nl}Tap to set up"
             } else buildString {
-                if (tile.icon.isNotEmpty()) append(tile.icon).append("
-")
+                if (tile.icon.isNotEmpty()) {
+                    append(tile.icon)
+                    append(nl)
+                }
                 append(tile.label)
             }
             textSize = if (isEmpty) 15f else 18f
