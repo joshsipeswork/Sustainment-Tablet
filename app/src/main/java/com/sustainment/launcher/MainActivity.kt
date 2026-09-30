@@ -32,6 +32,8 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
 import org.json.JSONArray
 import org.json.JSONObject
 import java.text.SimpleDateFormat
@@ -49,6 +51,25 @@ class MainActivity : AppCompatActivity() {
 
     // Newline built from a char code so no backslash escape exists in source.
     private val nl = Char(10).toString()
+
+    // ---------------- Modern-JS polyfills for old WebView engines ----------------
+    // The ANT monitor SPA (BlueBotics) crashes on an old engine because it calls
+    // Object.hasOwn (WebView v93+). This shim re-adds Object.hasOwn plus a couple
+    // of era-mates so a pre-v93 engine can still boot the app. It is benign
+    // feature-shimming only. NOTE: a genuinely ancient engine may be missing many
+    // more modern features (DOM/CSS included) that JS cannot backfill, so this may
+    // become whack-a-mole. Updating the real WebView engine is the durable fix.
+    private val polyfillJs: String = listOf(
+        "(function(){",
+        "try{",
+        "if(!Object.hasOwn){Object.defineProperty(Object,'hasOwn',{value:function(o,p){if(o==null){throw new TypeError('Cannot convert undefined or null to object');}return Object.prototype.hasOwnProperty.call(Object(o),p);},configurable:true,writable:true});}",
+        "if(!Array.prototype.at){Object.defineProperty(Array.prototype,'at',{value:function(n){n=Math.trunc(n)||0;if(n<0){n+=this.length;}return (n<0||n>=this.length)?undefined:this[n];},configurable:true,writable:true});}",
+        "if(!String.prototype.at){Object.defineProperty(String.prototype,'at',{value:function(n){n=Math.trunc(n)||0;if(n<0){n+=this.length;}return (n<0||n>=this.length)?undefined:this[n];},configurable:true,writable:true});}",
+        "if(!String.prototype.replaceAll){Object.defineProperty(String.prototype,'replaceAll',{value:function(find,replace){if(Object.prototype.toString.call(find)==='[object RegExp]'){if(!find.global){throw new TypeError('replaceAll must be called with a global RegExp');}return this.replace(find,replace);}return this.split(find).join(replace);},configurable:true,writable:true});}",
+        "}catch(e){}",
+        "})();"
+    ).joinToString(nl)
+    // ----------------------------------------------------------------------------
 
     // Key for remembering the last-used plant across app restarts.
     private val lastPlantKey = "last_plant"
@@ -78,8 +99,8 @@ class MainActivity : AppCompatActivity() {
     )
 
     private val iconChoices = listOf(
-        "— none —", "🤖", "🚚", "🔧", "🛠️", "⚙️", "📊", "📈", "📋",
-        "🗺️", "🧭", "📡", "🏭", "📦", "🧰", "🚨", "🔋", "🌐", "🖥️", "📁"
+        "— none —", "", "", "", "️", "⚙️", "", "", "",
+        "️", "", "", "", "", "", "", "", "", "️", ""
     )
 
     private lateinit var prefs: SharedPreferences
@@ -606,12 +627,12 @@ class MainActivity : AppCompatActivity() {
         }
         val options = arrayOf(
             "✏️  Rename",
-            "🎯  Change target (app or web)",
-            "😀  Set icon",
-            "🎨  Accent color",
+            "  Change target (app or web)",
+            "  Set icon",
+            "  Accent color",
             "↔️  Move / swap",
             "⧉  Duplicate",
-            "🗑  Clear"
+            "  Clear"
         )
         AlertDialog.Builder(this)
             .setTitle(tile.label.ifEmpty { "Tile ${index + 1}" })
@@ -697,7 +718,7 @@ class MainActivity : AppCompatActivity() {
     private fun configureTile(index: Int, existing: Tile?) {
         AlertDialog.Builder(this)
             .setTitle(if (existing == null) "Set up tile ${index + 1}" else "Change target")
-            .setItems(arrayOf("🌐  Website (URL)", "📱  Installed app")) { _, which ->
+            .setItems(arrayOf("  Website (URL)", "  Installed app")) { _, which ->
                 if (which == 0) configureUrl(index, existing) else configureApp(index, existing)
             }
             .show()
@@ -777,7 +798,7 @@ class MainActivity : AppCompatActivity() {
                             label = label,
                             type = TileType.URL,
                             target = url,
-                            icon = existing?.icon?.ifEmpty { "🌐" } ?: "🌐",
+                            icon = existing?.icon?.ifEmpty { "" } ?: "",
                             color = existing?.color ?: defaultAccent,
                             user = userInput.text.toString(),
                             pass = passInput.text.toString(),
@@ -815,7 +836,7 @@ class MainActivity : AppCompatActivity() {
                         label = existing?.label?.ifEmpty { label } ?: label,
                         type = TileType.APP,
                         target = pkg,
-                        icon = existing?.icon?.ifEmpty { "📱" } ?: "📱",
+                        icon = existing?.icon?.ifEmpty { "" } ?: "",
                         color = existing?.color ?: defaultAccent
                     )
                 )
@@ -914,7 +935,7 @@ class MainActivity : AppCompatActivity() {
                         label = label,
                         type = TileType.URL,
                         target = url,
-                        icon = "🌐",
+                        icon = "",
                         color = defaultAccent
                     ),
                     render = false // grid is behind the overlay; refresh on close
@@ -940,6 +961,9 @@ class MainActivity : AppCompatActivity() {
             settings.loadWithOverviewMode = true
             webChromeClient = object : WebChromeClient() {
                 // Surface JS console errors (SPA crashes often show up here).
+                // KEEP THIS while validating the polyfill: if Object.hasOwn is fixed
+                // but a NEW error appears, it means the old engine is missing more
+                // features and we add the next shim (whack-a-mole).
                 override fun onConsoleMessage(
                     cm: android.webkit.ConsoleMessage
                 ): Boolean {
@@ -954,6 +978,19 @@ class MainActivity : AppCompatActivity() {
                 }
             }
             webViewClient = object : WebViewClient() {
+                // Fallback polyfill path for engines older than ~v83 that do NOT
+                // support DOCUMENT_START_SCRIPT. Injected as early as we can here.
+                // TIMING RISK: on a very old engine this may lose the race against
+                // the SPA's first crashing script. The document-start path in
+                // installPolyfills() is preferred when the engine supports it.
+                override fun onPageStarted(
+                    view: WebView,
+                    url: String?,
+                    favicon: android.graphics.Bitmap?
+                ) {
+                    view.evaluateJavascript(polyfillJs, null)
+                }
+
                 override fun onPageFinished(view: WebView, url: String?) {
                     injectLogin(view, tile)
                     if (tile.keepAlive) injectKeepAlive(view)
@@ -987,6 +1024,7 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 // Catches SSL cert problems. REPORTS ONLY - does NOT bypass.
+                // SECURITY: never change handler.cancel() to handler.proceed().
                 override fun onReceivedSslError(
                     view: WebView,
                     handler: android.webkit.SslErrorHandler,
@@ -1001,6 +1039,9 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
+
+        // Register the polyfill to run at document start (preferred path).
+        installPolyfills(web, tile)
 
         CookieManager.getInstance().apply {
             setAcceptCookie(true)
@@ -1073,6 +1114,26 @@ class MainActivity : AppCompatActivity() {
             }
             refreshRunnable = r
             webHandler.postDelayed(r, tile.refreshSecs * 1000L)
+        }
+    }
+
+    // ---------------- Polyfill installation ----------------
+
+    // Preferred path: register the polyfill to execute BEFORE any page script runs,
+    // on document start. Requires a WebView engine that supports DOCUMENT_START_SCRIPT
+    // (roughly v83+). Scoped to the tile's own origin so we do not inject globally.
+    // If the feature is unsupported (engine older than ~v83), we rely on the
+    // onPageStarted fallback in the WebViewClient instead.
+    private fun installPolyfills(web: WebView, tile: Tile) {
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) return
+        val origin = runCatching {
+            val u = Uri.parse(tile.target)
+            val portPart = if (u.port != -1) ":" + u.port else ""
+            u.scheme + "://" + u.host + portPart
+        }.getOrNull()
+        val rules = if (origin.isNullOrEmpty()) setOf("*") else setOf(origin)
+        runCatching {
+            WebViewCompat.addDocumentStartJavaScript(web, polyfillJs, rules)
         }
     }
 
