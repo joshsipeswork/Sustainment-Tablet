@@ -1,3 +1,4 @@
+// VS Code local-edit pipeline test — safe no-op comment
 pluginManagement {
     repositories {
         google()
